@@ -1,30 +1,33 @@
+# Resnet 구조에 SENet Block 추가
+# SE-Resnet
+
 import six
-from keras.layers import Input, Dense, Activation, Flatten, Conv2D
+from keras.layers import Dense, Activation, Conv2D, multiply, Reshape
 from keras.layers.merge import add
 from keras.layers import GlobalAveragePooling2D, MaxPooling2D, BatchNormalization
 from keras.optimizers import Adam
-from keras.models import Sequential, Input, Model
+from keras.models import  Input, Model
 from keras.regularizers import l2
 from keras import backend as K
-class Resnet():
+class SE_Resnet():
 
     def __init__(self, input_shape=(224, 224, 3), num_classes=5005):
-        self.model = self.build_resnet_50(input_shape, num_classes)
+        self.model = self.build_SE_resnet_50(input_shape, num_classes)
 
     # 34 Layer
-    def build_resnet_34(self, input_shape, num_outputs):
-        return self.get_Resnet(input_shape, num_outputs, self.basic_block, [3, 4, 6, 3])
+    def build_SE_resnet_34(self, input_shape, num_outputs):
+        return self.get_SENet(input_shape, num_outputs, self.basic_block, [3, 4, 6, 3])
 
     # 50 Layer
-    def build_resnet_50(self, input_shape, num_outputs):
-        return self.get_Resnet(input_shape, num_outputs, self.bottleneck, [3, 4, 6, 3])
+    def build_SE_resnet_50(self, input_shape, num_outputs):
+        return self.get_SENet(input_shape, num_outputs, self.bottleneck, [3, 4, 6, 3])
 
     # 101 Layer
-    def build_resnet_101(self, input_shape, num_outputs):
-        return self.get_Resnet(input_shape, num_outputs, self.bottleneck, [3, 4, 23, 3])
+    def build_SE_resnet_101(self, input_shape, num_outputs):
+        return self.get_SENet(input_shape, num_outputs, self.bottleneck, [3, 4, 23, 3])
 
     # 기본적인 Block 형태 34 Layer 미만
-    def basic_block(self, filters, strides=(1,1), is_first=False):
+    def basic_block(self, filters, strides=(1,1), is_first=False, reduction_ratio=16):
         # 2016버전 Resnet Block: pre_activation 형태
         def func(input):
             if is_first:
@@ -33,11 +36,12 @@ class Resnet():
             else:
                 conv1 = self.bn_relu_conv(kernel=(3,3), filter=filters, stride=strides)(input)
             residual = self.bn_relu_conv(kernel=(3, 3), filter=filters)(conv1)
-            return self.shortcut(input, residual)
+            se_block = self.SE_block(residual, reduction_ratio=reduction_ratio)
+            return self.shortcut(input, se_block)
         return func
 
     # 34 Layer 이상 사용하는 Block형태
-    def bottleneck(self, filters, strides=(1,1), is_first=False):
+    def bottleneck(self, filters, strides=(1,1), is_first=False, reduction_ratio=16):
 
         def func(input):
             if is_first:
@@ -46,8 +50,21 @@ class Resnet():
                 conv1 = self.bn_relu_conv(filter=filters, kernel=(1,1), stride=strides)(input)
             conv3 = self.bn_relu_conv(filter=filters, kernel=(3,3))(conv1)
             residual = self.bn_relu_conv(filter=filters*4, kernel=(1,1))(conv3)
-            return self.shortcut(input, residual)
+            se_block = self.SE_block(residual, reduction_ratio=reduction_ratio)
+            return self.shortcut(input, se_block)
         return func
+
+    # Sequeeze --> Excitation --> Scale
+    def SE_block(self, input, reduction_ratio):
+        input_shape = K.int_shape(input)
+        squeeze = GlobalAveragePooling2D()(input)
+        excitation = Dense(units=int(input_shape[3]/reduction_ratio), kernel_initializer="he_normal")(squeeze)
+        excitation = Activation('relu')(excitation)
+        excitation = Dense(units=input_shape[3], kernel_initializer='he_normal')(excitation)
+        excitation = Activation('sigmoid')(excitation)
+        excitation = Reshape((1,1,input_shape[3]))(excitation)
+        scale = multiply([input, excitation])
+        return scale
 
     # F(x) + x 형태
     def shortcut(self, input, residual):
@@ -101,7 +118,7 @@ class Resnet():
             return input
         return func
 
-    def get_Resnet(self, input_shape, num_classes, block_fn, residual):
+    def get_SENet(self, input_shape, num_classes, block_fn, residual):
         # First Conv Layer
         input = Input(shape=input_shape)
         conv1 = self.conv_bn_relu(filter=64, kernel=(7,7), stride=(2,2))(input)
